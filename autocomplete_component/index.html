@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: "Source Sans Pro", -apple-system, sans-serif;
+    background: transparent;
+    padding: 4px 0;
+  }
+
+  .row {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+
+  .field { position: relative; }
+  .field.city { flex: 1; }
+  .field.location { flex: 2; }
+
+  label {
+    display: block;
+    font-size: 0.82rem;
+    color: #94a3b8;
+    margin-bottom: 4px;
+    font-weight: 500;
+  }
+
+  input {
+    width: 100%;
+    padding: 8px 11px;
+    font-size: 0.93rem;
+    background: #0e1117;
+    color: #fafafa;
+    border: 1px solid #374151;
+    border-radius: 6px;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  input:focus { border-color: #4f8ef7; }
+  input::placeholder { color: #4b5563; }
+
+  .dropdown {
+    display: none;
+    position: absolute;
+    top: calc(100% + 3px);
+    left: 0; right: 0;
+    background: #1e293b;
+    border: 1px solid #334155;
+    border-radius: 7px;
+    z-index: 9999;
+    max-height: 240px;
+    overflow-y: auto;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.5);
+  }
+  .dropdown.open { display: block; }
+
+  .item {
+    padding: 8px 12px;
+    font-size: 0.88rem;
+    color: #cbd5e1;
+    cursor: pointer;
+    border-bottom: 1px solid #27374d55;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .item:last-child { border-bottom: none; }
+  .item:hover, .item.active { background: #2d4263; color: #f8fafc; }
+  .item .icon { margin-right: 6px; opacity: 0.7; font-size: 0.8rem; }
+
+  .confirmed {
+    font-size: 0.75rem;
+    color: #38bdf8;
+    margin-top: 4px;
+    padding-left: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+</style>
+</head>
+<body>
+
+<div class="row">
+  <div class="field city">
+    <label>🏙️ City / Area</label>
+    <input id="cityInput" type="text" placeholder="e.g. Mumbai, Paris…" autocomplete="off" />
+    <div class="dropdown" id="cityDropdown"></div>
+    <div class="confirmed" id="cityConfirmed"></div>
+  </div>
+
+  <div class="field location">
+    <label>📍 Location / Place</label>
+    <input id="locInput" type="text" placeholder="e.g. Cafe Goodluck, Taj Mahal…" autocomplete="off" />
+    <div class="dropdown" id="locDropdown"></div>
+    <div class="confirmed" id="locConfirmed"></div>
+  </div>
+</div>
+
+<script>
+  const API = "http://127.0.0.1:8503";
+
+  // State
+  let confirmedCity     = "";
+  let confirmedLocation = "";
+  let cityTimer  = null;
+  let locTimer   = null;
+  let cityActive = -1;
+  let locActive  = -1;
+
+  const cityInput      = document.getElementById("cityInput");
+  const cityDropdown   = document.getElementById("cityDropdown");
+  const cityConfirmed  = document.getElementById("cityConfirmed");
+  const locInput       = document.getElementById("locInput");
+  const locDropdown    = document.getElementById("locDropdown");
+  const locConfirmed   = document.getElementById("locConfirmed");
+
+  // ── Streamlit messaging ────────────────────────────────────────────────────
+  function sendValue(city, location) {
+    window.parent.postMessage({
+      type: "streamlit:setComponentValue",
+      value: { city: city, location: location }
+    }, "*");
+  }
+
+  // ── Generic dropdown builder ───────────────────────────────────────────────
+  function buildDropdown(dropdown, items, icon, onSelect) {
+    dropdown.innerHTML = "";
+    if (!items || !items.length) { dropdown.classList.remove("open"); return; }
+    items.forEach(text => {
+      const div = document.createElement("div");
+      div.className = "item";
+      div.innerHTML = `<span class="icon">${icon}</span>${text}`;
+      div.addEventListener("mousedown", e => {
+        e.preventDefault();
+        onSelect(text);
+      });
+      dropdown.appendChild(div);
+    });
+    dropdown.classList.add("open");
+  }
+
+  function closeAll() {
+    cityDropdown.classList.remove("open");
+    locDropdown.classList.remove("open");
+    cityActive = locActive = -1;
+  }
+
+  function navigate(dropdown, delta, activeRef) {
+    const items = dropdown.querySelectorAll(".item");
+    if (!items.length) return activeRef;
+    items[activeRef] && items[activeRef].classList.remove("active");
+    activeRef = Math.max(-1, Math.min(items.length - 1, activeRef + delta));
+    if (activeRef >= 0) {
+      items[activeRef].classList.add("active");
+      items[activeRef].scrollIntoView({ block: "nearest" });
+    }
+    return activeRef;
+  }
+
+  // ── City input ─────────────────────────────────────────────────────────────
+  cityInput.addEventListener("input", () => {
+    confirmedCity = "";
+    cityConfirmed.textContent = "";
+    // Reset location when city changes
+    confirmedLocation = "";
+    locInput.value = "";
+    locConfirmed.textContent = "";
+    locDropdown.classList.remove("open");
+
+    clearTimeout(cityTimer);
+    const q = cityInput.value.trim();
+    if (q.length < 2) { cityDropdown.classList.remove("open"); return; }
+
+    cityTimer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${API}/city?q=${encodeURIComponent(q)}`);
+        const items = await res.json();
+        buildDropdown(cityDropdown, items, "🏙️", text => {
+          const name = text.split(",")[0].trim();
+          cityInput.value  = name;
+          confirmedCity    = name;
+          cityConfirmed.textContent = "📌 " + name;
+          cityDropdown.classList.remove("open");
+          locInput.focus();
+          sendValue(confirmedCity, confirmedLocation);
+        });
+      } catch(e) {}
+    }, 200);  // 200 ms debounce — fast but won't hammer the API
+  });
+
+  cityInput.addEventListener("keydown", e => {
+    if (e.key === "ArrowDown") { e.preventDefault(); cityActive = navigate(cityDropdown, 1, cityActive); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); cityActive = navigate(cityDropdown, -1, cityActive); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      const active = cityDropdown.querySelector(".item.active");
+      if (active) active.dispatchEvent(new MouseEvent("mousedown"));
+      else { confirmedCity = cityInput.value.trim(); cityConfirmed.textContent = confirmedCity ? "📌 " + confirmedCity : ""; cityDropdown.classList.remove("open"); sendValue(confirmedCity, confirmedLocation); locInput.focus(); }
+    }
+    else if (e.key === "Escape") closeAll();
+  });
+
+  // ── Location input ─────────────────────────────────────────────────────────
+  locInput.addEventListener("input", () => {
+    confirmedLocation = "";
+    locConfirmed.textContent = "";
+
+    clearTimeout(locTimer);
+    const q    = locInput.value.trim();
+    const city = confirmedCity || cityInput.value.trim();
+    if (q.length < 2) { locDropdown.classList.remove("open"); return; }
+
+    locTimer = setTimeout(async () => {
+      try {
+        const url = `${API}/place?q=${encodeURIComponent(q)}&city=${encodeURIComponent(city)}`;
+        const res   = await fetch(url);
+        const items = await res.json();
+        buildDropdown(locDropdown, items, "📍", text => {
+          locInput.value    = text;
+          confirmedLocation = text;
+          locConfirmed.textContent = "✅ " + text;
+          locDropdown.classList.remove("open");
+          sendValue(confirmedCity, confirmedLocation);
+        });
+      } catch(e) {}
+    }, 200);
+  });
+
+  locInput.addEventListener("keydown", e => {
+    if (e.key === "ArrowDown") { e.preventDefault(); locActive = navigate(locDropdown, 1, locActive); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); locActive = navigate(locDropdown, -1, locActive); }
+    else if (e.key === "Enter") {
+      e.preventDefault();
+      const active = locDropdown.querySelector(".item.active");
+      if (active) active.dispatchEvent(new MouseEvent("mousedown"));
+      else { confirmedLocation = locInput.value.trim(); locConfirmed.textContent = confirmedLocation ? "✅ " + confirmedLocation : ""; locDropdown.classList.remove("open"); sendValue(confirmedCity, confirmedLocation); }
+    }
+    else if (e.key === "Escape") closeAll();
+  });
+
+  // Close dropdowns on outside click
+  document.addEventListener("click", e => {
+    if (!e.target.closest(".field")) closeAll();
+  });
+
+  // ── Receive initial values from Streamlit ──────────────────────────────────
+  window.addEventListener("message", e => {
+    if (e.data.type !== "streamlit:render") return;
+    const args = e.data.args || {};
+    if (args.city && cityInput.value !== args.city) {
+      cityInput.value = args.city;
+      confirmedCity   = args.city;
+      cityConfirmed.textContent = "📌 " + args.city;
+    }
+    if (args.location && locInput.value !== args.location) {
+      locInput.value    = args.location;
+      confirmedLocation = args.location;
+      locConfirmed.textContent = "✅ " + args.location;
+    }
+  });
+
+  // Tell Streamlit the component is ready
+  window.parent.postMessage({ type: "streamlit:componentReady", apiVersion: 1 }, "*");
+
+  // Dynamically resize iframe height to fit open dropdowns
+  function updateHeight() {
+    const h = document.body.scrollHeight;
+    window.parent.postMessage({ type: "streamlit:setFrameHeight", height: h }, "*");
+  }
+
+  new MutationObserver(updateHeight).observe(document.body, { childList: true, subtree: true, attributes: true });
+  updateHeight();
+</script>
+</body>
+</html>

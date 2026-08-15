@@ -1,0 +1,8 @@
+apify-client>=1.7.0
+groq>=0.11.0
+python-dotenv>=1.0.0
+rich>=13.7.0
+streamlit>=1.30.0
+plotly>=5.18.0
+pandas>=2.0.0
+streamlit-searchbox>=0.1.14
